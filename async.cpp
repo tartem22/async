@@ -3,27 +3,6 @@
 
 #include <memory>
 
-std::vector<std::string> split(const char *c_str, std::size_t size)
-{
-    std::string str;
-    std::vector<std::string> r;
-    r.reserve(1000);
-
-    for (std::size_t i = 0; i < size; i++)
-    {
-        if (*c_str == '\n' && str.length() != 0)
-        {
-            r.push_back(str);
-            str.clear();
-        }
-        else
-            str += *c_str;
-        c_str++;
-    }
-    r.shrink_to_fit();
-    return r;
-}
-
 namespace async
 {
 
@@ -31,6 +10,8 @@ namespace async
     {
         CommandHandler *handler =
             new CommandHandler(bulk);
+
+        // handler->start();
 
         return static_cast<void *>(handler);
     }
@@ -40,17 +21,15 @@ namespace async
                  std::size_t size)
     {
         CommandHandler *handler = static_cast<CommandHandler *>(handle);
-        std::vector<std::string> cmds = split(data, size);
         handler->start();
-        for (auto &cmd : cmds)
-            handler->handle(cmd);
+        handler->handle(data, size);
         handler->stop();
     }
 
     void disconnect(handle_t handle)
     {
         CommandHandler *handler = static_cast<CommandHandler *>(handle);
-        handler->stop();
+        handler->quit();
         delete handler;
     }
 

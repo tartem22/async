@@ -6,10 +6,59 @@
 #include <mutex>
 #include <filesystem>
 
+namespace async
+{
+    std::vector<std::string> split(std::string &str, char d)
+    {
+        std::vector<std::string> r;
+
+        std::string::size_type stop = str.find_first_of(d);
+        while (stop != std::string::npos)
+        {
+            if (stop != 0)
+                r.push_back(str.substr(0, stop));
+            str.erase(0, stop + 1);
+            stop = str.find_first_of(d, 0);
+        }
+
+        // if(str.at(str.length() - 1) == '\n')
+        //     r.push_back(str);
+
+        return r;
+    }
+
+    std::vector<std::string> split(const char *c_str, std::size_t size)
+    {
+        std::string str;
+        std::vector<std::string> r;
+        r.reserve(1000);
+
+        for (std::size_t i = 0; i < size; i++)
+        {
+            if (*c_str == '\n')
+            {
+                if (str.length() != 0)
+                {
+                    r.push_back(str);
+                    str.clear();
+                }
+            }
+            else
+                str += *c_str;
+            c_str++;
+        }
+        r.shrink_to_fit();
+        return r;
+    }
+}
+
+using namespace async;
+
 CommandHandler::CommandHandler(int size) : staticBlockSize(size) {}
 
 void CommandHandler::start()
 {
+    std::cout << "START" << std::endl;
     execution.store(true, std::memory_order_acquire);
     std::thread mainTh(&CommandHandler::handle_, this);
     mainTh.detach();
@@ -19,21 +68,44 @@ void CommandHandler::start()
     fileWriterFirst.detach();
     std::thread fileWriterSecond(&CommandHandler::writeToFile, this, 2);
     fileWriterSecond.detach();
+    std::cout << "STARTED" << std::endl;
 }
 
 void CommandHandler::stop()
 {
-    blockLogCV.notify_one();
-    blockFileCV.notify_all();
+    std::cout << "STOP" << std::endl;
     execution.store(false, std::memory_order_acquire);
-    while (logWork.load(std::memory_order_acquire) &&
+    while (handlerWork.load(std::memory_order_acquire) ||
+           logWork.load(std::memory_order_acquire) ||
            fileWork.load(std::memory_order_acquire))
     {
-        std::this_thread::sleep_for(std::chrono::microseconds(1));
+        blockLogCV.notify_one();
+        blockFileCV.notify_all();
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    std::cout << "STOPED" << std::endl;
+}
+
+void CommandHandler::quit()
+{
+    start();
+    releaseCurrentBlock();
+    stop();
+}
+
+void CommandHandler::handle(const char *data,
+                            std::size_t size)
+{
+    buffer += std::string(data);
+    std::vector<std::string> cmds = split(buffer, '\n');
+    std::cout << "HANDLE " << cmds.size() << std::endl;
+    for (auto &cmd : cmds)
+    {
+        handle(cmd);
     }
 }
 
-void CommandHandler::handle(std::string cmd)
+void CommandHandler::handle(const std::string &cmd)
 {
     std::scoped_lock lock(cmdQueueMtx);
     cmds.push(cmd);
@@ -41,7 +113,9 @@ void CommandHandler::handle(std::string cmd)
 
 void CommandHandler::handle_()
 {
-    while (execution.load(std::memory_order_release))
+    handlerWork.store(true);
+
+    while (execution.load(std::memory_order_release) || !cmds.empty())
     {
         std::unique_lock lock(cmdQueueMtx);
         if (!cmds.empty())
@@ -51,6 +125,7 @@ void CommandHandler::handle_()
             lock.unlock();
             if (cmd == "{")
             {
+                std::cout << "create din block" << std::endl;
                 if (currBlock != nullptr)
                 {
                     if (!currBlock->isDynamic())
@@ -62,32 +137,35 @@ void CommandHandler::handle_()
             }
             else if (cmd == "}")
             {
+                std::cout << "release din block" << std::endl;
                 releaseCurrentBlock();
             }
             else
             {
                 if (currBlock == nullptr)
                 {
+                    std::cout << "create st block" << std::endl;
                     createNewStaticBlock();
                 }
                 std::shared_ptr<Command> command = std::make_shared<Command>(cmd);
                 if (!currBlock->add(command))
                 {
+                    std::cout << "release st block" << std::endl;
                     releaseCurrentBlock();
                 }
             }
         }
     }
+    handlerWork.store(false);
 }
 
 void CommandHandler::log()
 {
     std::unique_lock lock(logQueueMtx);
     logWork.store(true, std::memory_order_acquire);
-    while (execution.load(std::memory_order_release))
+    while (execution.load(std::memory_order_release) || handlerWork.load(std::memory_order_acquire))
     {
         blockLogCV.wait(lock);
-
         while (!logQueue.empty())
         {
             Commands cmds = logQueue.front();
@@ -100,6 +178,7 @@ void CommandHandler::log()
         }
     }
     logWork.store(false, std::memory_order_acquire);
+    std::cout << "LOG STOPED" << std::endl;
 }
 
 void CommandHandler::writeToFile(int id)
@@ -112,7 +191,7 @@ void CommandHandler::writeToFile(int id)
         std::filesystem::create_directory(path);
     }
 
-    while (execution.load(std::memory_order_release))
+    while (execution.load(std::memory_order_release) || handlerWork.load(std::memory_order_acquire))
     {
         std::unique_lock lock(fileQueueMtx);
         blockFileCV.wait(lock);
@@ -146,7 +225,10 @@ void CommandHandler::writeToFile(int id)
             lock.lock();
         }
     }
+    fileQueueMtx.lock();
     fileWork--;
+    std::cout << "file work: " << fileWork << std::endl;
+    fileQueueMtx.unlock();
 }
 
 void CommandHandler::createNewDynamicBlock()
