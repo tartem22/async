@@ -1,5 +1,4 @@
 #include <iostream>
-#include <thread>
 
 #include "command_handler.h"
 #include "async.h"

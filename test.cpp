@@ -19,7 +19,7 @@ TEST(command_handler, console_output)
     async::disconnect(h);
     async::disconnect(h2);
     
-    std::this_thread::sleep(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     std::string result = testing::internal::GetCapturedStdout();
 
