@@ -56,6 +56,7 @@ if(WITH_GTEST)
     target_link_libraries(tests
         gtest_main
         async
+        -pthread
     )
 endif()
 
