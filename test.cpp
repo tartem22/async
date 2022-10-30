@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <thread>
 #include "async.h"
 
 TEST(command_handler, console_output)
@@ -17,6 +18,8 @@ TEST(command_handler, console_output)
 
     async::disconnect(h);
     async::disconnect(h2);
+    
+    std::this_thread::sleep(std::chrono::milliseconds(100));
 
     std::string result = testing::internal::GetCapturedStdout();
 
