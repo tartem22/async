@@ -6,50 +6,47 @@
 #include <mutex>
 #include <filesystem>
 
-namespace async
+static std::vector<std::string> split(std::string &str, char d)
 {
-    std::vector<std::string> split(std::string &str, char d)
+    std::vector<std::string> r;
+
+    std::string::size_type stop = str.find_first_of(d);
+    while (stop != std::string::npos)
     {
-        std::vector<std::string> r;
-
-        std::string::size_type stop = str.find_first_of(d);
-        while (stop != std::string::npos)
-        {
-            if (stop != 0)
-                r.push_back(str.substr(0, stop));
-            str.erase(0, stop + 1);
-            stop = str.find_first_of(d, 0);
-        }
-
-        // if(str.at(str.length() - 1) == '\n')
-        //     r.push_back(str);
-
-        return r;
+        if (stop != 0)
+            r.push_back(str.substr(0, stop));
+        str.erase(0, stop + 1);
+        stop = str.find_first_of(d, 0);
     }
 
-    std::vector<std::string> split(const char *c_str, std::size_t size)
-    {
-        std::string str;
-        std::vector<std::string> r;
-        r.reserve(1000);
+    // if(str.at(str.length() - 1) == '\n')
+    //     r.push_back(str);
 
-        for (std::size_t i = 0; i < size; i++)
+    return r;
+}
+
+static std::vector<std::string> split(const char *c_str, std::size_t size)
+{
+    std::string str;
+    std::vector<std::string> r;
+    r.reserve(1000);
+
+    for (std::size_t i = 0; i < size; i++)
+    {
+        if (*c_str == '\n')
         {
-            if (*c_str == '\n')
+            if (str.length() != 0)
             {
-                if (str.length() != 0)
-                {
-                    r.push_back(str);
-                    str.clear();
-                }
+                r.push_back(str);
+                str.clear();
             }
-            else
-                str += *c_str;
-            c_str++;
         }
-        r.shrink_to_fit();
-        return r;
+        else
+            str += *c_str;
+        c_str++;
     }
+    r.shrink_to_fit();
+    return r;
 }
 
 using namespace async;
@@ -107,7 +104,7 @@ void CommandHandler::handle(const char *data,
 
 void CommandHandler::handle(const std::string &cmd)
 {
-    std::scoped_lock lock(cmdQueueMtx);
+    std::lock_guard lock(cmdQueueMtx);
     cmds.push(cmd);
 }
 
@@ -195,6 +192,7 @@ void CommandHandler::writeToFile(int id)
     {
         std::unique_lock lock(fileQueueMtx);
         blockFileCV.wait(lock);
+        // std::cout << "DEBUG: file log" << std::endl;
 
         while (!fileQueue.empty())
         {
@@ -211,19 +209,32 @@ void CommandHandler::writeToFile(int id)
             std::ofstream file(path);
             if (file.is_open())
             {
-                while (!data->cmds.empty())
+                std::unique_lock lockCmds(data->mtx);
+                bool isntEmpty = data->cmds.empty();
+                lockCmds.unlock();
+                while (isntEmpty)
                 {
-                    data->mtx.lock();
-                    std::string cmd = data->cmds.front()->get();
-                    data->cmds.pop();
-                    data->mtx.unlock();
-                    file << cmd << "\n";
-                    std::this_thread::sleep_for(std::chrono::nanoseconds(1));
+                    lockCmds.lock();
+                    isntEmpty = data->cmds.empty();
+                    if (isntEmpty)
+                    {
+                        std::string cmd = data->cmds.front()->get();
+                        data->cmds.pop();
+                        lockCmds.unlock();
+                        file << cmd << "\n";
+                        std::this_thread::sleep_for(std::chrono::nanoseconds(1));
+                    }
+                    else
+                    {
+                        lockCmds.unlock();
+                        break;
+                    }
                 }
                 file.close();
             }
             lock.lock();
         }
+        // std::cout << "DEBUG: file log end" << std::endl;
     }
     fileQueueMtx.lock();
     fileWork--;
@@ -250,17 +261,18 @@ void CommandHandler::createNewStaticBlock()
 
 void CommandHandler::releaseCurrentBlock()
 {
+    int cnt = 0;
     if (currBlock != nullptr)
     {
         // currBlock->release();
         if (!currBlock->isIgnored())
         {
-            std::scoped_lock lock(logQueueMtx);
+            std::lock_guard lock(logQueueMtx);
             Commands cmds = currBlock->getCommands();
             logQueue.push(cmds);
             blockLogCV.notify_one();
             int random = std::rand() % 100 + 10;
-            std::scoped_lock lockFile(fileQueueMtx);
+            std::lock_guard lockFile(fileQueueMtx);
             fileQueue.push(std::make_shared<FileLoggingData>(currBlock->getTimestamp() + std::to_string(random), cmds));
             blockFileCV.notify_all();
         }
