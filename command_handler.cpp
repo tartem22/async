@@ -210,12 +210,12 @@ void CommandHandler::writeToFile(int id)
             if (file.is_open())
             {
                 std::unique_lock lockCmds(data->mtx);
-                bool isntEmpty = data->cmds.empty();
+                bool isntEmpty = !data->cmds.empty();
                 lockCmds.unlock();
                 while (isntEmpty)
                 {
                     lockCmds.lock();
-                    isntEmpty = data->cmds.empty();
+                    isntEmpty = !data->cmds.empty();
                     if (isntEmpty)
                     {
                         std::string cmd = data->cmds.front()->get();
